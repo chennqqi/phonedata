@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"os"
-	"path"
-	"runtime"
 )
 
 const (
@@ -34,7 +31,6 @@ type PhoneRecord struct {
 }
 
 var (
-	content     []byte
 	CardTypemap = map[byte]string{
 		CMCC:   "中国移动",
 		CUCC:   "中国联通",
@@ -43,28 +39,35 @@ var (
 		CUCC_v: "中国联通虚拟运营商",
 		CMCC_v: "中国移动虚拟运营商",
 	}
-	total_len, firstoffset int32
 )
 
-func init() {
-	dir := os.Getenv("PHONE_DATA_DIR")
-	if dir == "" {
-		_, fulleFilename, _, _ := runtime.Caller(0)
-		dir = path.Dir(fulleFilename)
-	}
-	var err error
-	content, err = ioutil.ReadFile(path.Join(dir, PHONE_DAT))
-	if err != nil {
-		panic(err)
-	}
-	total_len = int32(len(content))
-	firstoffset = get4(content[INT_LEN : INT_LEN*2])
+type PhoneDict struct {
+	content                []byte
+	total_len, firstoffset int32
 }
 
-func Debug() {
-	fmt.Println(version())
-	fmt.Println(totalRecord())
-	fmt.Println(firstRecordOffset())
+func Parse(filename string) (*PhoneDict, error) {
+	var pd PhoneDict
+	var err error
+	pd.content, err = ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	pd.total_len = int32(len(pd.content))
+	pd.firstoffset = get4(pd.content[INT_LEN : INT_LEN*2])
+	return &pd, err
+}
+
+func (pd *PhoneDict) Version() string {
+	return string(pd.content[0:INT_LEN])
+}
+
+func (pd *PhoneDict) TotalRecord() int32 {
+	return (int32(len(pd.content)) - pd.firstRecordOffset()) / PHONE_INDEX_LENGTH
+}
+
+func (pd *PhoneDict) firstRecordOffset() int32 {
+	return get4(pd.content[INT_LEN : INT_LEN*2])
 }
 
 func (pr PhoneRecord) String() string {
@@ -119,20 +122,8 @@ func getN(s string) (uint32, error) {
 	return n, nil
 }
 
-func version() string {
-	return string(content[0:INT_LEN])
-}
-
-func totalRecord() int32 {
-	return (int32(len(content)) - firstRecordOffset()) / PHONE_INDEX_LENGTH
-}
-
-func firstRecordOffset() int32 {
-	return get4(content[INT_LEN : INT_LEN*2])
-}
-
 // 二分法查询phone数据
-func Find(phone_num string) (pr *PhoneRecord, err error) {
+func (pd *PhoneDict) Find(phone_num string) (pr *PhoneRecord, err error) {
 	if len(phone_num) < 7 || len(phone_num) > 11 {
 		return nil, errors.New("illegal phone length")
 	}
@@ -143,26 +134,26 @@ func Find(phone_num string) (pr *PhoneRecord, err error) {
 		return nil, errors.New("illegal phone number")
 	}
 	phone_seven_int32 := int32(phone_seven_int)
-	right := (total_len - firstoffset) / PHONE_INDEX_LENGTH
+	right := (pd.total_len - pd.firstoffset) / PHONE_INDEX_LENGTH
 	for {
 		if left > right {
 			break
 		}
 		mid := (left + right) / 2
-		offset := firstoffset + mid*PHONE_INDEX_LENGTH
-		if offset >= total_len {
+		offset := pd.firstoffset + mid*PHONE_INDEX_LENGTH
+		if offset >= pd.total_len {
 			break
 		}
-		cur_phone := get4(content[offset : offset+INT_LEN])
-		record_offset := get4(content[offset+INT_LEN : offset+INT_LEN*2])
-		card_type := content[offset+INT_LEN*2 : offset+INT_LEN*2+CHAR_LEN][0]
+		cur_phone := get4(pd.content[offset : offset+INT_LEN])
+		record_offset := get4(pd.content[offset+INT_LEN : offset+INT_LEN*2])
+		card_type := pd.content[offset+INT_LEN*2 : offset+INT_LEN*2+CHAR_LEN][0]
 		switch {
 		case cur_phone > phone_seven_int32:
 			right = mid - 1
 		case cur_phone < phone_seven_int32:
 			left = mid + 1
 		default:
-			cbyte := content[record_offset:]
+			cbyte := pd.content[record_offset:]
 			end_offset := int32(bytes.Index(cbyte, []byte("\000")))
 			data := bytes.Split(cbyte[:end_offset], []byte("|"))
 			card_str, ok := CardTypemap[card_type]
